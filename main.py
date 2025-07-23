@@ -1,37 +1,34 @@
 from fastapi import FastAPI, Request
 import os
-import requests
+import httpx
 
 app = FastAPI()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-
-@app.post("/webhook")
-async def telegram_webhook(req: Request):
-    data = await req.json()
-    message = data.get("message", {})
-    chat_id = message.get("chat", {}).get("id")
-    text = message.get("text", "")
-
-    if text == "/start":
-        send_message(chat_id, "Welcome to TruePast.")
-    elif text == "/newvideo":
-        send_message(chat_id, "Generating your video... (placeholder)")
-    return {"ok": True}
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 @app.get("/")
-def root():
-    return {"message": "Bot is running"}
+def home():
+    return {"message": "TruePast backend is live."}
 
-@app.get("/set-webhook")
-def set_webhook():
-    webhook_url = os.getenv("WEBHOOK_URL")
-    response = requests.get(f"{BASE_URL}/setWebhook?url={webhook_url}/webhook")
-    return response.json()
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    data = await request.json()
 
-def send_message(chat_id, text):
-    requests.post(f"{BASE_URL}/sendMessage", json={
-        "chat_id": chat_id,
-        "text": text
-    })
+    chat_id = data["message"]["chat"]["id"]
+    text = data["message"].get("text", "")
+
+    if text == "/start":
+        reply = "Welcome to TruePast!"
+    elif text == "/newvideo":
+        reply = "Generating your video... (placeholder)"
+    else:
+        reply = f"You said: {text}"
+
+    async with httpx.AsyncClient() as client:
+        await client.post(
+            TELEGRAM_API_URL,
+            json={"chat_id": chat_id, "text": reply}
+        )
+
+    return {"ok": True}
