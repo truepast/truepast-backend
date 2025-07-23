@@ -195,18 +195,26 @@ async def get_visual(prompt):
         image.save(temp_path)
         return temp_path
 
+import traceback
+
 async def create_video(script, prompt):
-    audio_path = await generate_voice(script)
-    image_path = await get_visual(prompt)
+    try:
+        audio_path = await generate_voice(script)
+        image_path = await get_visual(prompt)
 
-    audioclip = AudioFileClip(audio_path)
-    duration = audioclip.duration
-    imgclip = ImageClip(image_path).set_duration(duration).resize(height=720).set_fps(24).set_audio(audioclip)
+        audioclip = AudioFileClip(audio_path)
+        duration = audioclip.duration
+        imgclip = ImageClip(image_path).set_duration(duration).resize(height=720).set_fps(24).set_audio(audioclip)
 
-    title = TextClip(prompt, fontsize=40, color='white', font="Arial-Bold", size=(imgclip.w, 100))
-    title = title.set_position(("center", "top")).set_duration(duration)
-    final = CompositeVideoClip([imgclip, title])
+        title = TextClip(prompt, fontsize=40, color='white', font="Arial-Bold", size=(imgclip.w, 100))
+        title = title.set_position(("center", "top")).set_duration(duration)
 
-    final_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-    final.write_videofile(final_path, fps=24)
-    return final_path
+        final = CompositeVideoClip([imgclip, title])
+        final_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+        final.write_videofile(final_path, fps=24)
+        return final_path
+
+    except Exception as e:
+        print("❌ FULL TRACEBACK:")
+        traceback.print_exc()
+        raise Exception(f"Video rendering failed: {str(e)}")
