@@ -52,7 +52,7 @@ async def handle_webhook(req: Request):
         await send_message(chat_id, "What should this video be about?")
 
     elif state == "awaiting_prompt":
-        user_states[chat_id] = "processing"  # prevent spamming
+        user_states[chat_id] = "processing"  # Prevent spamming
         await send_message(chat_id, f"Generating script for: {text}")
         script = await generate_script(text)
         user_states[chat_id] = {
@@ -108,8 +108,18 @@ async def generate_script(prompt):
         ]
     }
     async with httpx.AsyncClient() as client:
-        response = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
-        return response.json()["choices"][0]["message"]["content"]
+        try:
+            response = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+
+            if response.status_code != 200:
+                error_text = await response.aread()
+                return f"OpenAI API error {response.status_code}:\n{error_text.decode()}"
+
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+
+        except Exception as e:
+            return f"Failed to generate script: {str(e)}"
 
 async def generate_voice(script):
     url = "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL"
