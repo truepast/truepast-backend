@@ -1,9 +1,10 @@
 fastapi
-python-dotenv
-httpx
+uvicorn
 requests
+httpx
+python-telegram-bot
+elevenlabs
 pexels_api
 moviepy
+python-dotenv
 Pillow
-python-telegram-bot==13.15
-openai
