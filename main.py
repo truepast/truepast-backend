@@ -44,22 +44,27 @@ async def handle_webhook(req: Request):
     state = user_states.get(chat_id)
 
     if text == "/start":
-        await send_message(chat_id, "Welcome to TruePast. Use /newvideo to begin.")
         user_states[chat_id] = None
+        await send_message(chat_id, "Welcome to TruePast. Use /newvideo to begin.")
 
     elif text == "/newvideo":
         user_states[chat_id] = "awaiting_prompt"
         await send_message(chat_id, "What should this video be about?")
 
     elif state == "awaiting_prompt":
+        user_states[chat_id] = "processing"  # prevent spamming
         await send_message(chat_id, f"Generating script for: {text}")
         script = await generate_script(text)
-        user_states[chat_id] = {"stage": "awaiting_approval", "script": script, "prompt": text}
+        user_states[chat_id] = {
+            "stage": "awaiting_approval",
+            "script": script,
+            "prompt": text
+        }
         await send_message(chat_id, f"Here’s your script:\n\n{script}\n\nReply ✅ to approve or ✏️ to edit.")
 
     elif isinstance(state, dict) and state.get("stage") == "awaiting_approval":
         if "✅" in text:
-            await send_message(chat_id, "Script approved. Generating voiceover and visuals...")
+            await send_message(chat_id, "Script approved. Generating voice and visuals...")
             video_path = await create_video(state["script"], state["prompt"])
             await send_video(chat_id, video_path)
             user_states[chat_id] = None
@@ -70,11 +75,12 @@ async def handle_webhook(req: Request):
             await send_message(chat_id, "Reply with ✅ to approve or ✏️ to edit.")
 
     elif state == "awaiting_revised_script":
-        user_states[chat_id] = {"stage": "awaiting_approval", "script": text, "prompt": "custom revision"}
+        user_states[chat_id] = {
+            "stage": "awaiting_approval",
+            "script": text,
+            "prompt": "custom revision"
+        }
         await send_message(chat_id, f"Updated script received:\n\n{text}\n\nReply ✅ to approve or ✏️ to edit.")
-
-    else:
-        await send_message(chat_id, "Use /newvideo to start.")
 
     return {"ok": True}
 
@@ -97,7 +103,7 @@ async def generate_script(prompt):
     payload = {
         "model": "gpt-4",
         "messages": [
-            {"role": "system", "content": "You're a professional YouTube scriptwriter for a bold history channel."},
+            {"role": "system", "content": "You're a professional YouTube scriptwriter for a bold, emotionally powerful history channel."},
             {"role": "user", "content": f"Write a powerful, 2-minute YouTube script about: {prompt}"}
         ]
     }
@@ -139,7 +145,7 @@ async def create_video(script, prompt):
 
     audioclip = AudioFileClip(audio_path)
     duration = audioclip.duration
-    imgclip = ImageClip(image_path).set_duration(duration).set_fps(24).resize(height=720)
+    imgclip = ImageClip(image_path).set_duration(duration).resize(height=720).set_fps(24)
     imgclip = imgclip.set_audio(audioclip)
 
     title = TextClip(prompt, fontsize=40, color='white', font="Arial-Bold", size=(imgclip.w, 100))
