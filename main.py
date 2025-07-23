@@ -157,14 +157,14 @@ async def generate_script(prompt):
 
 async def generate_voice(script):
     headers = {
-        "xi-api-key": ELEVENLABS_KEY,
+        "xi-api-key": ELEVENLABS_API_KEY,
         "Content-Type": "application/json"
     }
     data = {
         "text": script,
         "voice_settings": {"stability": 0.4, "similarity_boost": 0.75}
     }
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=45.0) as client:  # ← Extended to 45 seconds
         response = await client.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{FREDERICK_VOICE_ID}",
             headers=headers,
