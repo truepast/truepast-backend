@@ -3,7 +3,6 @@ import tempfile
 from fastapi import FastAPI, Request
 from dotenv import load_dotenv
 import httpx
-import requests
 from pexels_api import API as PexelsAPI
 from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip, TextClip
 from PIL import Image
@@ -12,7 +11,6 @@ from io import BytesIO
 load_dotenv()
 app = FastAPI()
 
-# Env vars
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
@@ -55,12 +53,16 @@ async def handle_webhook(req: Request):
         user_states[chat_id] = "processing"
         await send_message(chat_id, f"Generating script for: {text}")
         script = await generate_script(text)
-        user_states[chat_id] = {
-            "stage": "awaiting_approval",
-            "script": script,
-            "prompt": text
-        }
-        await send_message(chat_id, f"Here’s your script:\n\n{script}\n\nReply ✅ to approve or ✏️ to edit.")
+        if not script:
+            await send_message(chat_id, "❌ Failed to generate script. Please try again.")
+            user_states[chat_id] = None
+        else:
+            user_states[chat_id] = {
+                "stage": "awaiting_approval",
+                "script": script,
+                "prompt": text
+            }
+            await send_message(chat_id, f"Here’s your script:\n\n{script}\n\nReply ✅ to approve or ✏️ to edit.")
 
     elif isinstance(state, dict) and state.get("stage") == "awaiting_approval":
         if "✅" in text:
@@ -84,57 +86,63 @@ async def handle_webhook(req: Request):
 
     return {"ok": True}
 
-# -- Helper Functions --
+# Helper Functions
 
 async def send_message(chat_id, text):
     async with httpx.AsyncClient() as client:
         await client.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": text})
 
 async def send_video(chat_id, video_path):
-    with open(video_path, "rb") as f:
-        files = {"video": f}
-        requests.post(f"{TELEGRAM_API}/sendVideo", data={"chat_id": chat_id}, files=files)
+    async with httpx.AsyncClient() as client:
+        with open(video_path, "rb") as f:
+            files = {"video": f}
+            await client.post(f"{TELEGRAM_API}/sendVideo", data={"chat_id": chat_id}, files=files)
 
 async def generate_script(prompt):
-    headers = {
-        "Authorization": f"Bearer {OPENAI_KEY}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {OPENAI_KEY}"}
     payload = {
-        "model": "gpt-4-0613",
+        "model": "gpt-3.5-turbo",
         "messages": [
-            {"role": "system", "content": (
-                "You're a professional YouTube scriptwriter for a bold, emotionally powerful history channel. "
-                "The scripts should be cinematic and structured with a clear arc: hook → context → tension → resolution → message. "
-                "Make it emotionally impactful, historically truthful, and compelling to watch."
-            )},
-            {"role": "user", "content": f"Write a powerful, 2-minute YouTube script about: {prompt}"}
+            {
+                "role": "system",
+                "content": (
+                    "You are a professional YouTube scriptwriter for a bold, emotionally powerful history channel. "
+                    "Write scripts with a cinematic arc: hook → context → tension/conflict → resolution → final message. "
+                    "Your writing must grab attention immediately, explain what’s at stake, provide historical context and drama, "
+                    "and finish with a memorable, emotionally resonant message. "
+                    "Aim for clarity, emotional impact, and fact-based storytelling — not generic or dry summaries. "
+                    "Keep it engaging and suited for a two-minute narrated video."
+                )
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Write a script for a 2-minute YouTube history video about: {prompt} "
+                    "Begin with a bold, dramatic hook. Quickly give background/context. Build tension — show what was lost, threatened, or fought for. "
+                    "Move to the climax or key turning point. End with a strong, emotional resolution or lesson for today’s viewer."
+                )
+            }
         ]
     }
-
     async with httpx.AsyncClient() as client:
-        response = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
-        try:
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
-        except Exception as e:
-            print("OpenAI API error:", data)
-            return f"OpenAI API error: {data}"
+        response = await client.post(
+            "https://api.openai.com/v1/chat/completions", headers=headers, json=payload
+        )
+        res_json = response.json()
+        return res_json["choices"][0]["message"]["content"] if "choices" in res_json else None
 
 async def generate_voice(script):
-    url = "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL"
-    headers = {
-        "xi-api-key": ELEVENLABS_KEY,
-        "Content-Type": "application/json"
-    }
+    headers = {"xi-api-key": ELEVENLABS_KEY}
     data = {
         "text": script,
         "voice_settings": {"stability": 0.4, "similarity_boost": 0.75}
     }
-    response = requests.post(url, headers=headers, json=data)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
-        f.write(response.content)
-        return f.name
+    async with httpx.AsyncClient() as client:
+        response = await client.post("https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL", headers=headers, json=data)
+        audio_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
+        with open(audio_path, "wb") as f:
+            f.write(response.content)
+        return audio_path
 
 async def get_visual(prompt):
     api = PexelsAPI(PEXELS_API_KEY)
@@ -142,11 +150,12 @@ async def get_visual(prompt):
     photos = api.get_entries()
     if photos:
         image_url = photos[0].original
-        response = requests.get(image_url)
-        image = Image.open(BytesIO(response.content))
-        temp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
-        image.save(temp_path)
-        return temp_path
+        async with httpx.AsyncClient() as client:
+            response = await client.get(image_url)
+            image = Image.open(BytesIO(response.content))
+            temp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
+            image.save(temp_path)
+            return temp_path
     return None
 
 async def create_video(script, prompt):
@@ -155,8 +164,7 @@ async def create_video(script, prompt):
 
     audioclip = AudioFileClip(audio_path)
     duration = audioclip.duration
-    imgclip = ImageClip(image_path).set_duration(duration).resize(height=720).set_fps(24)
-    imgclip = imgclip.set_audio(audioclip)
+    imgclip = ImageClip(image_path).set_duration(duration).resize(height=720).set_fps(24).set_audio(audioclip)
 
     title = TextClip(prompt, fontsize=40, color='white', font="Arial-Bold", size=(imgclip.w, 100))
     title = title.set_position(("center", "top")).set_duration(duration)
