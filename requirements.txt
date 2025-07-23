@@ -1,3 +1,7 @@
 fastapi
 uvicorn
 requests
+httpx
+python-telegram-bot
+elevenlabs
+pexels_api
