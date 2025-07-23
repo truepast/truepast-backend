@@ -12,7 +12,7 @@ from io import BytesIO
 load_dotenv()
 app = FastAPI()
 
-# Environment variables
+# Env vars
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
@@ -48,11 +48,8 @@ async def handle_webhook(req: Request):
         await send_message(chat_id, "Welcome to TruePast. Use /newvideo to begin.")
 
     elif text == "/newvideo":
-        if user_states.get(chat_id) == "processing":
-            await send_message(chat_id, "Still working on your last request. Please wait.")
-        else:
-            user_states[chat_id] = "awaiting_prompt"
-            await send_message(chat_id, "What should this video be about?")
+        user_states[chat_id] = "awaiting_prompt"
+        await send_message(chat_id, "What should this video be about?")
 
     elif state == "awaiting_prompt":
         user_states[chat_id] = "processing"
@@ -85,12 +82,9 @@ async def handle_webhook(req: Request):
         }
         await send_message(chat_id, f"Updated script received:\n\n{text}\n\nReply ✅ to approve or ✏️ to edit.")
 
-    else:
-        await send_message(chat_id, "Use /newvideo to start.")
-        
     return {"ok": True}
 
-# --- Helper Functions ---
+# -- Helper Functions --
 
 async def send_message(chat_id, text):
     async with httpx.AsyncClient() as client:
@@ -107,15 +101,25 @@ async def generate_script(prompt):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "gpt-4",
+        "model": "gpt-4-0613",
         "messages": [
-            {"role": "system", "content": "You're a professional YouTube scriptwriter for a bold, emotionally powerful history channel. Every video should follow this arc: hook → context → tension → emotional payoff → resolution. Keep it cinematic, human, and memorable."},
-            {"role": "user", "content": f"Write a 2-minute YouTube script about: {prompt}"}
+            {"role": "system", "content": (
+                "You're a professional YouTube scriptwriter for a bold, emotionally powerful history channel. "
+                "The scripts should be cinematic and structured with a clear arc: hook → context → tension → resolution → message. "
+                "Make it emotionally impactful, historically truthful, and compelling to watch."
+            )},
+            {"role": "user", "content": f"Write a powerful, 2-minute YouTube script about: {prompt}"}
         ]
     }
+
     async with httpx.AsyncClient() as client:
         response = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
-        return response.json()["choices"][0]["message"]["content"]
+        try:
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+        except Exception as e:
+            print("OpenAI API error:", data)
+            return f"OpenAI API error: {data}"
 
 async def generate_voice(script):
     url = "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL"
