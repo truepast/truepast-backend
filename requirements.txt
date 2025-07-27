@@ -8,3 +8,4 @@ pexels_api
 moviepy==1.0.3
 python-dotenv
 Pillow
+openai
