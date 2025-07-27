@@ -164,22 +164,37 @@ async def generate_script(prompt, style_id):
             return res.json()["choices"][0]["message"]["content"]
         except Exception as e:
             return None
-
 async def generate_voice(script):
-    headers = {"xi-api-key": ELEVEN_KEY}
+    headers = {
+        "xi-api-key": ELEVEN_KEY,
+        "Content-Type": "application/json"
+    }
     data = {
         "text": script,
-        "voice_settings": {"stability": 0.4, "similarity_boost": 0.75}
+        "voice_settings": {
+            "stability": 0.4,
+            "similarity_boost": 0.75
+        }
     }
+
     try:
         async with httpx.AsyncClient(timeout=45.0) as client:
-            response = await client.post("https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL", headers=headers, json=data)
+            response = await client.post(
+                "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL",
+                headers=headers,
+                json=data
+            )
+
+            if response.status_code != 200:
+                raise RuntimeError(f"ElevenLabs error {response.status_code}: {response.text}")
+
             audio_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
             with open(audio_path, "wb") as f:
                 f.write(response.content)
             return audio_path
+
     except Exception as e:
-        raise RuntimeError(f"Voice generation failed: {e}")
+        raise RuntimeError(f"Voice generation failed: {str(e)}")
 
 async def get_visual(prompt):
     api = PexelsAPI(PEXELS_API_KEY)
