@@ -4,13 +4,14 @@ from fastapi import FastAPI, Request
 from dotenv import load_dotenv
 import httpx
 from pexels_api import API as PexelsAPI
-from moviepy.editor import *
+from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip, TextClip
 from PIL import Image
 from io import BytesIO
 
 load_dotenv()
 app = FastAPI()
 
+# Load environment variables
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
@@ -19,7 +20,6 @@ PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 user_states = {}
-library = []
 
 @app.on_event("startup")
 async def set_webhook():
@@ -44,72 +44,55 @@ async def handle_webhook(req: Request):
 
     if text == "/start":
         user_states[chat_id] = None
-        await send_message(chat_id, "Welcome to TruePast. Use /newvideo to begin or /library to view saved topics.")
-
-    elif text == "/library":
-        if not library:
-            await send_message(chat_id, "ð Library is empty for now.")
-        else:
-            entries = "\n\n".join([f"â¢ {item['title']}" for item in library])
-            await send_message(chat_id, f"ð Saved Topics:\n\n{entries}")
+        await send_message(chat_id, "Welcome to TruePast. Use /newvideo to begin.")
 
     elif text == "/newvideo":
-        user_states[chat_id] = "awaiting_style"
-        await send_message(chat_id, "Choose video style:\n1ï¸â£ Classic\n2ï¸â£ Conspiracy\n3ï¸â£ Forgotten Heroes\n4ï¸â£ Lost Civilizations\n5ï¸â£ Suppressed Truth")
+        user_states[chat_id] = "awaiting_prompt"
+        await send_message(chat_id, "What should this video be about?")
 
-    elif state == "awaiting_style" and text in ["1", "2", "3", "4", "5"]:
-        user_states[chat_id] = {"stage": "awaiting_prompt", "style": text}
-        await send_message(chat_id, "Great. Now send the topic.")
-
-    elif isinstance(state, dict) and state.get("stage") == "awaiting_prompt":
-        style = state["style"]
-        user_states[chat_id] = {"stage": "generating", "style": style, "prompt": text}
-        await send_message(chat_id, f"ð Writing script for: {text}")
-        script = await generate_script(text, style)
+    elif state == "awaiting_prompt":
+        user_states[chat_id] = "processing"
+        await send_message(chat_id, f"Generating script for: {text}")
+        script = await generate_script(text)
         if not script:
-            await send_message(chat_id, "â Script failed. Try again.")
+            await send_message(chat_id, "❌ Failed to generate script. Please try again.")
             user_states[chat_id] = None
         else:
-            user_states[chat_id].update({"stage": "script_approval", "script": script})
-            await send_message(chat_id, f"ð Script:\n\n{script}\n\nâ to approve, âï¸ to edit, â»ï¸ to regenerate")
+            user_states[chat_id] = {
+                "stage": "awaiting_approval",
+                "script": script,
+                "prompt": text
+            }
+            await send_message(chat_id, f"🧠 Script:\n\n{script}\n\nReply ✅ to approve or ✏️ to edit.")
 
-    elif isinstance(state, dict) and state.get("stage") == "script_approval":
-        if text == "â":
-            await send_message(chat_id, "ð Generating voice & visuals...")
+    elif isinstance(state, dict) and state.get("stage") == "awaiting_approval":
+        if "✅" in text:
+            await send_message(chat_id, "🎙 Creating voice and visuals...")
             try:
                 video_path = await create_video(state["script"], state["prompt"])
                 await send_video(chat_id, video_path)
-                library.append({"title": state["prompt"], "script": state["script"]})
-                user_states[chat_id] = {"stage": "upload_prompt"}
-                await send_message(chat_id, "â¬ï¸ Upload video to YouTube, TikTok, IG & FB? (yes/no)")
-            except Exception as e:
-                await send_message(chat_id, f"â Error during video creation: {str(e)}")
                 user_states[chat_id] = None
-        elif text == "âï¸":
-            user_states[chat_id]["stage"] = "awaiting_edit"
+            except Exception as e:
+                await send_message(chat_id, f"❌ Video creation failed:\n{str(e)}")
+                user_states[chat_id] = None
+        elif "✏️" in text:
             await send_message(chat_id, "Send your revised script.")
-        elif text == "â»ï¸":
-            await send_message(chat_id, "â»ï¸ Regenerating script...")
-            script = await generate_script(state["prompt"], state["style"])
-            if script:
-                user_states[chat_id]["script"] = script
-                await send_message(chat_id, f"ð New Script:\n\n{script}\n\nâ to approve, âï¸ to edit, â»ï¸ to regenerate")
-            else:
-                await send_message(chat_id, "â Regeneration failed.")
-
-    elif isinstance(state, dict) and state.get("stage") == "awaiting_edit":
-        user_states[chat_id]["script"] = text
-        user_states[chat_id]["stage"] = "script_approval"
-        await send_message(chat_id, f"Updated Script:\n\n{text}\n\nâ to approve, âï¸ to edit, â»ï¸ to regenerate")
-
-    elif isinstance(state, dict) and state.get("stage") == "upload_prompt":
-        if text.lower() == "yes":
-            await send_message(chat_id, "ð Simulated upload to all platforms complete.")
+            user_states[chat_id] = "awaiting_revised_script"
         else:
-            await send_message(chat_id, "â Video ready for manual download.")
-        user_states[chat_id] = None
+            await send_message(chat_id, "Reply ✅ to approve or ✏️ to edit.")
+
+    elif state == "awaiting_revised_script":
+        user_states[chat_id] = {
+            "stage": "awaiting_approval",
+            "script": text,
+            "prompt": "custom revision"
+        }
+        await send_message(chat_id, f"Updated Script:\n\n{text}\n\nReply ✅ to approve or ✏️ to edit.")
 
     return {"ok": True}
+
+
+# === Helper Functions ===
 
 async def send_message(chat_id, text):
     async with httpx.AsyncClient() as client:
@@ -120,31 +103,31 @@ async def send_video(chat_id, video_path):
         with open(video_path, "rb") as f:
             await client.post(f"{TELEGRAM_API}/sendVideo", data={"chat_id": chat_id}, files={"video": f})
 
-async def generate_script(prompt, style_id):
-    styles = {
-        "1": "bold, emotionally powerful history video in cinematic tone.",
-        "2": "conspiracy-driven script with mystery and dramatic shadows.",
-        "3": "script about a forgotten hero with an inspiring arc.",
-        "4": "lost civilization mystery with epic visuals.",
-        "5": "truth thatâs been hidden or suppressed, controversial tone."
-    }
-    full_prompt = f"Write a cinematic script with structure: Hook â Context â Tension â Resolution.
-Tone: {styles[style_id]}
-Topic: {prompt}"
+async def generate_script(prompt):
     headers = {"Authorization": f"Bearer {OPENAI_KEY}"}
-    payload = {"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": full_prompt}]}
+    payload = {
+        "model": "gpt-3.5-turbo",
+        "messages": [
+            {"role": "system", "content": "You're a professional YouTube scriptwriter for a bold, emotionally powerful history channel."},
+            {"role": "user", "content": f"Write a short-form history video script about: {prompt}\nStructure it as: Hook → Background → Conflict → Resolution."}
+        ]
+    }
     async with httpx.AsyncClient() as client:
-        res = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
-        return res.json()["choices"][0]["message"]["content"]
+        response = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+        res_json = response.json()
+        return res_json["choices"][0]["message"]["content"] if "choices" in res_json else None
 
 async def generate_voice(script):
     headers = {"xi-api-key": ELEVENLABS_KEY}
-    data = {"text": script, "voice_settings": {"stability": 0.4, "similarity_boost": 0.75}}
-    async with httpx.AsyncClient(timeout=45) as client:
-        res = await client.post("https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL", headers=headers, json=data)
+    data = {
+        "text": script,
+        "voice_settings": {"stability": 0.4, "similarity_boost": 0.75}
+    }
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        response = await client.post("https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL", headers=headers, json=data)
         audio_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
         with open(audio_path, "wb") as f:
-            f.write(res.content)
+            f.write(response.content)
         return audio_path
 
 async def get_visual(prompt):
@@ -152,12 +135,13 @@ async def get_visual(prompt):
     api.search(prompt, page=1, results_per_page=1)
     photos = api.get_entries()
     if photos:
+        image_url = photos[0].original
         async with httpx.AsyncClient() as client:
-            img_data = await client.get(photos[0].original)
-            img = Image.open(BytesIO(img_data.content))
-            path = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
-            img.save(path)
-            return path
+            response = await client.get(image_url)
+            image = Image.open(BytesIO(response.content)).convert("RGB")
+            temp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
+            image.save(temp_path)
+            return temp_path
     return None
 
 async def create_video(script, prompt):
@@ -165,12 +149,15 @@ async def create_video(script, prompt):
     image_path = await get_visual(prompt)
 
     audioclip = AudioFileClip(audio_path)
-    imgclip = ImageClip(image_path).set_duration(audioclip.duration).resize(height=720).set_audio(audioclip)
+    duration = audioclip.duration
+    imgclip = ImageClip(image_path).set_duration(duration).resize(height=720).set_audio(audioclip)
 
-    title = TextClip(prompt, fontsize=70, font="BebasNeue-Regular", color="white", size=(imgclip.w, 120)).set_position(("center", "top")).set_duration(audioclip.duration)
-    watermark = TextClip("TruePast", fontsize=40, font="BebasNeue-Regular", color="white").set_position(("right", "bottom")).set_duration(audioclip.duration)
+    title = TextClip(prompt, fontsize=40, color='white', font="Arial-Bold", size=(imgclip.w, 100))
+    title = title.set_position(("center", "top")).set_duration(duration)
+    watermark = TextClip("TruePast", fontsize=30, color='white', font="Arial-Bold")
+    watermark = watermark.set_position(("right", "bottom")).set_duration(duration)
 
     final = CompositeVideoClip([imgclip, title, watermark])
-    output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-    final.write_videofile(output_path, fps=24)
-    return output_path
+    final_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+    final.write_videofile(final_path, fps=24)
+    return final_path
