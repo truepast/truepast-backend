@@ -1,200 +1,170 @@
 import os
-import tempfile
+import openai
+import requests
 from fastapi import FastAPI, Request
-from dotenv import load_dotenv
-import httpx
-from pexels_api import API as PexelsAPI
-from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip, TextClip
+from pydub import AudioSegment
 from PIL import Image
-from io import BytesIO
+from moviepy.editor import *
+from dotenv import load_dotenv
+import tempfile
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 load_dotenv()
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+VOICE_ID = "j9jfwdrw7BRfcR43Qohk"
+
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 app = FastAPI()
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
-ELEVENLABS_KEY = os.getenv("ELEVENLABS_API_KEY")
-PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+user_state = {}
 
-user_states = {}
+script_styles = {
+    "1": "Write a cinematic and emotionally powerful history short. Hook the viewer immediately, build suspense, and leave them with a memorable final message. Tone should be serious and bold.",
+    "2": "Write a fast-paced, curiosity-driven historical short that opens with a bold fact or claim, then explains it quickly. Ideal for social media virality.",
+    "3": "Write a first-person historical short where the narrator speaks as if they were living through the event. Use personal emotion and vivid storytelling.",
+    "4": "Write a timeline-based historical short. Walk the viewer through the key moments in chronological order. Hook with the outcome, then go back to the beginning.",
+    "5": "Write a myth-busting or controversial historical short that challenges what most people believe. Use bold claims and strong evidence."
+}
 
-@app.on_event("startup")
-async def set_webhook():
-    async with httpx.AsyncClient() as client:
-        await client.post(f"{TELEGRAM_API}/setWebhook", json={"url": WEBHOOK_URL})
+def generate_script(prompt, style_number):
+    openai.api_key = OPENAI_API_KEY
+    system_prompt = script_styles.get(style_number, script_styles["1"])
+    user_prompt = f"{system_prompt}\n\nTopic: {prompt}"
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        temperature=1,
+        max_tokens=500
+    )
+    return response['choices'][0]['message']['content'].strip()
 
-@app.get("/")
-def root():
-    return {"status": "TruePast backend running."}
-
-@app.post("/")
-async def handle_webhook(req: Request):
-    try:
-        data = await req.json()
-        message = data.get("message", {})
-        chat_id = message.get("chat", {}).get("id")
-        text = message.get("text", "")
-
-        if not chat_id or not text:
-            return {"ok": True}
-
-        state = user_states.get(chat_id)
-
-        if text == "/start":
-            user_states[chat_id] = None
-            await send_message(chat_id, "Welcome to TruePast. Use /newvideo to begin.")
-
-        elif text == "/newvideo":
-            user_states[chat_id] = "awaiting_prompt"
-            await send_message(chat_id, "What should this video be about?")
-
-        elif state == "awaiting_prompt":
-            user_states[chat_id] = "processing"
-            await send_message(chat_id, f"Generating script for: {text}")
-            script = await generate_script(text)
-            if not script:
-                await send_message(chat_id, "❌ Failed to generate script. Please try again.")
-                user_states[chat_id] = None
-            else:
-                user_states[chat_id] = {
-                    "stage": "awaiting_approval",
-                    "script": script,
-                    "prompt": text
-                }
-                await send_message(chat_id, f"Here’s your script:\n\n{script}\n\nReply ✅ to approve, ✏️ to edit, or 🔁 to regenerate.")
-
-        elif isinstance(state, dict) and state.get("stage") == "awaiting_approval":
-            if "✅" in text:
-                await send_message(chat_id, "Script approved. Generating voice and visuals...")
-                try:
-                    video_path = await create_video(state["script"], state["prompt"])
-                    await send_video(chat_id, video_path)
-                except Exception as e:
-                    await send_message(chat_id, f"❌ Video generation failed: {str(e)}")
-                user_states[chat_id] = None
-
-            elif "✏️" in text:
-                await send_message(chat_id, "Send your revised script.")
-                user_states[chat_id] = "awaiting_revised_script"
-
-            elif "🔁" in text:
-                prompt = state.get("prompt", "")
-                new_script = await generate_script(prompt)
-                if new_script:
-                    user_states[chat_id]["script"] = new_script
-                    await send_message(chat_id, f"Here’s the new version:\n\n{new_script}\n\nReply ✅ to approve, ✏️ to edit, or 🔁 to regenerate again.")
-                else:
-                    await send_message(chat_id, "❌ Failed to regenerate script. Try again later.")
-            else:
-                await send_message(chat_id, "Reply with ✅ to approve, ✏️ to edit, or 🔁 to regenerate.")
-
-        elif state == "awaiting_revised_script":
-            user_states[chat_id] = {
-                "stage": "awaiting_approval",
-                "script": text,
-                "prompt": "custom revision"
-            }
-            await send_message(chat_id, f"Updated script received:\n\n{text}\n\nReply ✅ to approve, ✏️ to edit, or 🔁 to regenerate.")
-
-        return {"ok": True}
-
-    except Exception as e:
-        await send_message(chat_id, f"❌ Unexpected error: {str(e)}")
-        return {"error": str(e)}
-
-# Helper Functions
-
-async def send_message(chat_id, text):
-    async with httpx.AsyncClient() as client:
-        await client.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": text})
-
-async def send_video(chat_id, video_path):
-    async with httpx.AsyncClient() as client:
-        with open(video_path, "rb") as f:
-            files = {"video": f}
-            await client.post(f"{TELEGRAM_API}/sendVideo", data={"chat_id": chat_id}, files=files)
-
-async def generate_script(prompt):
-    headers = {"Authorization": f"Bearer {OPENAI_KEY}"}
-    payload = {
-        "model": "gpt-3.5-turbo",
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are a professional YouTube scriptwriter for a bold, emotionally powerful history channel. "
-                    "Write with cinematic structure: hook → background → tension → turning point → resolution. "
-                    "Keep it factual, punchy, and suited for a 2-minute voiceover. Dramatic, but never corny."
-                )
-            },
-            {
-                "role": "user",
-                "content": f"Write a short YouTube script about: {prompt}"
-            }
-        ]
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            "https://api.openai.com/v1/chat/completions", headers=headers, json=payload
-        )
-        res_json = response.json()
-        return res_json["choices"][0]["message"]["content"] if "choices" in res_json else None
-
-async def generate_voice(script):
+def generate_voice(script_text):
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
     headers = {
-        "xi-api-key": ELEVENLABS_KEY,
+        "xi-api-key": ELEVENLABS_API_KEY,
         "Content-Type": "application/json"
     }
     data = {
-        "text": script,
-        "voice_settings": {"stability": 0.4, "similarity_boost": 0.75}
+        "text": script_text,
+        "model_id": "eleven_monolingual_v1",
+        "voice_settings": {
+            "stability": 0.4,
+            "similarity_boost": 1
+        }
     }
+    response = requests.post(url, headers=headers, json=data, timeout=45)
+    if response.status_code == 200:
+        temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        temp_audio.write(response.content)
+        temp_audio.close()
+        return temp_audio.name
+    else:
+        raise Exception(f"Voice generation failed: {response.text}")
 
-    try:
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            response = await client.post(
-                "https://api.elevenlabs.io/v1/text-to-speech/j9jfwdrw7BRfcR43Qohk",
-                headers=headers,
-                json=data
-            )
-            if response.status_code != 200:
-                raise Exception(f"Voice API error: {response.status_code} — {response.text}")
+def generate_video_with_images(script_text):
+    image_urls = [
+        "https://images.pexels.com/photos/3765133/pexels-photo-3765133.jpeg",
+        "https://images.pexels.com/photos/1054666/pexels-photo-1054666.jpeg",
+        "https://images.pexels.com/photos/929778/pexels-photo-929778.jpeg"
+    ]
+    images = []
+    for url in image_urls:
+        img_response = requests.get(url)
+        if img_response.status_code == 200:
+            img_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+            img_temp.write(img_response.content)
+            img_temp.close()
+            img = Image.open(img_temp.name)
+            img = img.resize((1080, 1920), resample=Image.Resampling.LANCZOS)
+            images.append(img)
 
-            audio_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
-            with open(audio_path, "wb") as f:
-                f.write(response.content)
-            return audio_path
-    except Exception as e:
-        raise Exception(f"Voice generation failed: {str(e)}")
+    clips = []
+    for img in images:
+        img_temp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
+        img.save(img_temp_path)
+        clip = ImageClip(img_temp_path).set_duration(3)
+        clips.append(clip)
 
-async def get_visual(prompt):
-    api = PexelsAPI(PEXELS_API_KEY)
-    api.search(prompt, page=1, results_per_page=1)
-    photos = api.get_entries()
-    if photos:
-        image_url = photos[0].original
-        async with httpx.AsyncClient() as client:
-            response = await client.get(image_url)
-            image = Image.open(BytesIO(response.content))
-            temp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
-            image.save(temp_path)
-            return temp_path
-    raise Exception("No image found for visuals.")
+    final_video = concatenate_videoclips(clips, method="compose")
+    audio_path = generate_voice(script_text)
+    audio = AudioFileClip(audio_path)
+    final_video = final_video.set_audio(audio)
 
-async def create_video(script, prompt):
-    audio_path = await generate_voice(script)
-    image_path = await get_visual(prompt)
+    output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+    final_video.write_videofile(output_path, codec="libx264", audio_codec="aac")
+    return output_path
 
-    audioclip = AudioFileClip(audio_path)
-    duration = audioclip.duration
-    imgclip = ImageClip(image_path).set_duration(duration).resize(height=720).set_fps(24).set_audio(audioclip)
+@bot.message_handler(commands=['start', 'newvideo'])
+def start_message(message):
+    user_id = message.chat.id
+    user_state[user_id] = {"step": "choose_style"}
+    markup = InlineKeyboardMarkup()
+    for i in range(1, 6):
+        markup.add(InlineKeyboardButton(f"Style {i}", callback_data=f"style_{i}"))
+    bot.send_message(user_id, "Choose a script style:", reply_markup=markup)
 
-    title = TextClip(prompt, fontsize=40, color='white', font="Arial-Bold", size=(imgclip.w, 100))
-    title = title.set_position(("center", "top")).set_duration(duration)
-    final = CompositeVideoClip([imgclip, title])
+@bot.callback_query_handler(func=lambda call: call.data.startswith("style_"))
+def handle_style_selection(call):
+    style_number = call.data.split("_")[1]
+    user_id = call.message.chat.id
+    user_state[user_id] = {
+        "step": "awaiting_prompt",
+        "style_number": style_number
+    }
+    bot.send_message(user_id, f"Great. Now send me your topic.")
 
-    final_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-    final.write_videofile(final_path, fps=24)
-    return final_path
+@bot.message_handler(func=lambda message: user_state.get(message.chat.id, {}).get("step") == "awaiting_prompt")
+def handle_prompt(message):
+    user_id = message.chat.id
+    style_number = user_state[user_id]["style_number"]
+    prompt = message.text
+    script = generate_script(prompt, style_number)
+    user_state[user_id]["script"] = script
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("✅ Approve", callback_data="approve"))
+    markup.add(InlineKeyboardButton("✏️ Edit", callback_data="edit"))
+    markup.add(InlineKeyboardButton("🔁 Regenerate", callback_data="regenerate"))
+    bot.send_message(user_id, f"Here’s your script:\n\n{script}", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data in ["approve", "edit", "regenerate"])
+def handle_script_action(call):
+    user_id = call.message.chat.id
+    action = call.data
+
+    if action == "approve":
+        bot.send_message(user_id, "Script approved. Generating voice and visuals...")
+        try:
+            script = user_state[user_id]["script"]
+            video_path = generate_video_with_images(script)
+            with open(video_path, "rb") as f:
+                bot.send_video(user_id, f)
+        except Exception as e:
+            bot.send_message(user_id, f"❌ Video generation failed: {e}")
+
+    elif action == "edit":
+        user_state[user_id]["step"] = "awaiting_prompt"
+        bot.send_message(user_id, "Okay. Send me your revised topic or prompt.")
+
+    elif action == "regenerate":
+        style_number = user_state[user_id]["style_number"]
+        prompt = user_state[user_id].get("prompt", "History")
+        script = generate_script(prompt, style_number)
+        user_state[user_id]["script"] = script
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("✅ Approve", callback_data="approve"))
+        markup.add(InlineKeyboardButton("✏️ Edit", callback_data="edit"))
+        markup.add(InlineKeyboardButton("🔁 Regenerate", callback_data="regenerate"))
+        bot.send_message(user_id, f"Here’s a new version:\n\n{script}", reply_markup=markup)
+
+@app.post("/")
+async def webhook(req: Request):
+    body = await req.body()
+    bot.process_new_updates([telebot.types.Update.de_json(body.decode("utf-8"))])
+    return {"ok": True}
